@@ -1,4 +1,4 @@
-{ stdenvNoCC, lib, buildPackages
+{ stdenvNoCC, lib, buildPackages, runCommand
 , cmake, ninja, dtc, gcc-arm-embedded
 , zephyr
 , board ? "glove80_lh"
@@ -60,9 +60,27 @@ let
   # This is not the best way to fix it, but it works around the problem.
   directZephyrModules = [ "cirque-input-module" ];
 
+  # ZMK Studio generates its RPC messages at build time with the nanopb
+  # generator, whose scripts start with `#!/usr/bin/env python3`. Zephyr modules
+  # are symlinked in read-only without `patchShebangs`, and the Nix sandbox has
+  # no `/usr/bin/env`, so the generator fails with "protoc: not found". Copy the
+  # nanopb module and patch its generator shebangs to our Python (which carries
+  # protobuf + grpcio-tools) so Studio-enabled builds work.
+  patchedNanopb = runCommand "zmk-module-nanopb-studio"
+    { nativeBuildInputs = [ python ]; }
+    ''
+      mkdir -p $out
+      cp -rL ${zephyr.modules.nanopb.modulePath} $out/nanopb
+      chmod -R u+w $out/nanopb
+      patchShebangs $out/nanopb/generator
+    '';
+
   zephyrModuleDeps =
     let modules = lib.attrVals requiredZephyrModules zephyr.modules;
-    in map (x: if builtins.elem x.src.name directZephyrModules then x.src else x.modulePath) modules;
+    in map (x:
+      if x.name == "zmk-module-nanopb" then "${patchedNanopb}/nanopb"
+      else if builtins.elem x.src.name directZephyrModules then x.src
+      else x.modulePath) modules;
 in
 
 stdenvNoCC.mkDerivation {
